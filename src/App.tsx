@@ -106,7 +106,6 @@ function App() {
   async function sendMessage() {
     if (!input || !selectedModel) return;
     setLoading(true);
-    let prompt = input;
     const userContent = input;
     setInput("");
 
@@ -114,9 +113,19 @@ function App() {
     setChats(prev => [
       ...prev,
       {role: "user" as const, content: userContent},
-      {role: "assistant" as const, content: "..."}
+      {role: "assistant" as const, content: "*Thinking...*"}
     ]);
 
+    // Build conversation history for context
+    let conversationHistory = "";
+    const currentMessages = [...chats, {role: "user" as const, content: userContent}];
+    for (const msg of currentMessages) {
+      if (!msg.content.startsWith('*') || !msg.content.endsWith('*')) { // Skip status messages
+        conversationHistory += `${msg.role}: ${msg.content}\n\n`;
+      }
+    }
+
+    let prompt = `Conversation history:\n${conversationHistory}\nCurrent user message: ${userContent}\n\nAssistant response:`;
     const assistantIndex = chats.length + 1; // user takes +1, assistant takes +1
 
     if (enableSearch) {
@@ -128,12 +137,68 @@ function App() {
         }
         return newChats;
       });
+
+      // Generate search keywords from user query using AI
+      let searchQuery = userContent;
       try {
-        const ddg = await invoke<string>("search_duckduckgo", { query: userContent });
-        const wiki = await invoke<string>("search_wikipedia", { query: userContent });
+        const keywordPrompt = `Create search keywords for this query. Output only comma-separated keywords, nothing else.
+
+Query: "${userContent}"
+Keywords:`;
+        const keywords = await invoke<string>("generate_ollama_response", {
+          model: selectedModel,
+          prompt: keywordPrompt
+        });
+        searchQuery = keywords.split(',').map(k => k.trim()).slice(0, 3).join(' ');
+        console.log("Generated search keywords:", searchQuery);
+      } catch (e) {
+        console.error("Keyword generation failed, using original query:", e);
+        searchQuery = userContent;
+      }
+
+      let contextParts: string[] = [];
+
+      // Search DDG independent of Wikipedia
+      try {
+        const ddg = await invoke<string>("search_duckduckgo", { query: searchQuery });
+        console.log("🔍 DDG search response:", ddg);
         const ddgData = JSON.parse(ddg);
-        const wikiData = JSON.parse(wiki);
-        const context = `DuckDuckGo: ${ddgData.AbstractText || ""}\nWikipedia: ${wikiData.extract || ""}`;
+        console.log("📊 Parsed DDG data:", ddgData);
+        let contextText = "";
+        if (ddgData.AbstractText && ddgData.AbstractText.trim()) {
+          contextText = ddgData.AbstractText;
+        } else if (ddgData.Answer && ddgData.Answer.trim()) {
+          contextText = ddgData.Answer;
+        } else if (ddgData.Definition && ddgData.Definition.trim()) {
+          contextText = ddgData.Definition + (ddgData.DefinitionSource ? ` (Source: ${ddgData.DefinitionSource})` : "");
+        } else if (ddgData.AnswerType === "calc" && ddgData.Answer) {
+          contextText = `Calculation result: ${ddgData.Answer}`;
+        } else {
+          // Fallback: use first few characters of raw response as context
+          const responseStr = JSON.stringify(ddgData).substring(0, 500);
+          if (responseStr.length > 50) {
+            contextText = `DuckDuckGo search results summary: ${responseStr}...`;
+          }
+        }
+
+        if (contextText.trim()) {
+          contextParts.push(`DuckDuckGo: ${contextText}`);
+        } else {
+          // DDG has no instant answers, but still provide some context
+          console.log("⚠️  DDG returned no useful instant answers for this query");
+          console.log("📊 Full response analysis:", JSON.stringify(ddgData, null, 2));
+          // Still consider it successful - just no context available
+          contextParts.push(`DuckDuckGo: No instant answers available, but search query completed for "${searchQuery}".`);
+        }
+      } catch (e) {
+        console.error("DDG search failed", e);
+      }
+
+
+
+      // Build context from available data
+      if (contextParts.length > 0) {
+        const context = contextParts.join("\n\n");
         prompt = `Based on this context:\n${context}\n\nAnswer: ${userContent}`;
         setChats(prev => {
           const newChats = [...prev];
@@ -142,13 +207,12 @@ function App() {
           }
           return newChats;
         });
-      } catch (e) {
-        console.error("Search failed", e);
-        prompt += " (Search failed, proceeding without context)";
+      } else {
+        prompt += " (No search context available)";
         setChats(prev => {
           const newChats = [...prev];
           if (newChats[assistantIndex]) {
-            newChats[assistantIndex].content = "*Search failed - generating response locally...*";
+            newChats[assistantIndex].content = "*No search results - generating response locally...*";
           }
           return newChats;
         });

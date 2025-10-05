@@ -69,27 +69,40 @@ async fn create_ollama_modelfile(name: String, modelfile: String) -> Result<Stri
 
 #[tauri::command]
 async fn search_duckduckgo(query: String) -> Result<String, String> {
-    let url = format!("https://api.duckduckgo.com/?q={}&format=json", urlencoding::encode(&query));
-    let response = reqwest::get(&url).await.map_err(|e| e.to_string())?;
-    if response.status().is_success() {
-        let text = response.text().await.map_err(|e| e.to_string())?;
-        Ok(text)
+    println!("🔍 Searching DuckDuckGo for: {}", query);
+
+    // Call the duck CLI tool installed via cargo
+    let output = std::process::Command::new("duck")
+        .args(&["--query", &query, "--limit", "5"])
+        .output()
+        .map_err(|e| format!("Failed to run duck command: {}", e))?;
+
+    if output.status.success() {
+        let result = String::from_utf8_lossy(&output.stdout);
+        let trimmed = result.trim();
+        println!("✅ DDG CLI response: {}", trimmed);
+
+        // Try to parse the output and format for frontend
+        // For now, just wrap in our expected structure
+        let output = serde_json::json!({
+            "AbstractText": trimmed.lines().next().unwrap_or("Search completed successfully"),
+            "AbstractSource": "",
+            "search_results": trimmed.lines().map(|line| serde_json::json!({
+                "title": "",
+                "url": line,
+                "description": ""
+            })).collect::<Vec<_>>()
+        });
+
+        Ok(output.to_string())
     } else {
-        Err("Search failed".to_string())
+        let error_msg = String::from_utf8_lossy(&output.stderr);
+        println!("❌ DDG CLI failed: {}", error_msg);
+        Err(format!("Search failed: {}", error_msg))
     }
 }
 
-#[tauri::command]
-async fn search_wikipedia(query: String) -> Result<String, String> {
-    let url = format!("https://en.wikipedia.org/api/rest_v1/page/summary/{}", urlencoding::encode(&query));
-    let response = reqwest::get(&url).await.map_err(|e| e.to_string())?;
-    if response.status().is_success() {
-        let text = response.text().await.map_err(|e| e.to_string())?;
-        Ok(text)
-    } else {
-        Err("Wikipedia search failed".to_string())
-    }
-}
+
 
 #[tauri::command]
 async fn check_ollama_running() -> Result<bool, String> {
@@ -134,7 +147,6 @@ pub fn run() {
             generate_ollama_response,
             create_ollama_modelfile,
             search_duckduckgo,
-            search_wikipedia,
             check_ollama_running,
             install_ollama
         ])
