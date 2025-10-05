@@ -116,10 +116,10 @@ function App() {
       {role: "assistant" as const, content: "*Thinking...*"}
     ]);
 
-    // Build conversation history for context
+    // Build conversation history for context (limit to last 10 messages to prevent overload)
     let conversationHistory = "";
-    const currentMessages = [...chats, {role: "user" as const, content: userContent}];
-    for (const msg of currentMessages) {
+    const recentMessages = [...chats, {role: "user" as const, content: userContent}].slice(-10);
+    for (const msg of recentMessages) {
       if (!msg.content.startsWith('*') || !msg.content.endsWith('*')) { // Skip status messages
         conversationHistory += `${msg.role}: ${msg.content}\n\n`;
       }
